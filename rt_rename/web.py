@@ -10,7 +10,7 @@ import dash_bootstrap_components as dbc
 import diskcache
 import pydicom
 
-from .config import get_models, get_prompts
+from .config import get_model_spec, get_models, get_prompts
 from .constants import (
     APP_NAME,
     APP_TITLE,
@@ -25,6 +25,7 @@ from .constants import (
 from .dicom_utils import dataset_from_upload_contents, update_dicom
 from .parsers import parse_csv, parse_dicom, parse_filenames
 from .rename_service import rename_structures
+from .visual_context import StructureImageContext
 
 CACHE_DIR.mkdir(exist_ok=True)
 cache = diskcache.Cache(str(CACHE_DIR))
@@ -54,6 +55,18 @@ COLUMN_DEFS = [
     {"field": "comment", "flex": 1, "editable": True},
     {"field": "raw output", "flex": 1, "editable": True},
 ]
+
+
+UPLOAD_BOX_STYLE = {
+    "width": "80%",
+    "lineHeight": "20px",
+    "borderWidth": "1px",
+    "borderStyle": "dashed",
+    "borderRadius": "5px",
+    "textAlign": "center",
+    "margin": "10px",
+    "verticalAlign": "center",
+}
 
 
 def _prompt_default() -> str | None:
@@ -92,10 +105,19 @@ def _build_grid() -> dag.AgGrid:
     )
 
 
+def _build_upload_summary(summary_id: str, default_text: str) -> html.Div:
+    return html.Div(
+        default_text,
+        id=summary_id,
+        style={"fontSize": "0.9rem", "marginLeft": "10px", "color": "#555"},
+    )
+
+
 def _build_layout() -> html.Div:
     return html.Div(
         [
             dcc.Store(id="uploaded-file-store"),
+            dcc.Store(id="ct-upload-store"),
             html.Div(
                 className="column",
                 children=[
@@ -202,17 +224,33 @@ def _build_layout() -> html.Div:
                                         html.Br(),
                                     ]
                                 ),
-                                style={
-                                    "width": "80%",
-                                    "lineHeight": "20px",
-                                    "borderWidth": "1px",
-                                    "borderStyle": "dashed",
-                                    "borderRadius": "5px",
-                                    "textAlign": "center",
-                                    "margin": "10px",
-                                    "verticalAlign": "center",
-                                },
+                                style=UPLOAD_BOX_STYLE,
                                 multiple=True,
+                            ),
+                            _build_upload_summary(
+                                "structure-upload-summary",
+                                "No RTSTRUCT/CSV uploaded yet.",
+                            ),
+                            html.P(
+                                "Planning CT",
+                                style={"verticalAlign": "center", "marginTop": "14px"},
+                            ),
+                            dcc.Upload(
+                                id="upload-ct-data",
+                                children=html.Div(
+                                    [
+                                        html.Br(),
+                                        "Drag and drop or click to select CT DICOM slices",
+                                        html.Br(),
+                                        html.Br(),
+                                    ]
+                                ),
+                                style=UPLOAD_BOX_STYLE,
+                                multiple=True,
+                            ),
+                            _build_upload_summary(
+                                "ct-upload-summary",
+                                "Optional: upload CT slices for VLM context.",
                             ),
                         ],
                         style={
@@ -350,6 +388,7 @@ def create_app() -> Dash:
         Output("main-data-table", "rowData"),
         Output("status-bar", "children"),
         Output("uploaded-file-store", "data"),
+        Output("structure-upload-summary", "children"),
         Input("upload-data", "filename"),
         Input("upload-data", "contents"),
         State("TV-filter", "value"),
@@ -357,7 +396,7 @@ def create_app() -> Dash:
     )
     def update_on_file_load(filenames, contents, filter_tv):
         if not filenames or not contents:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         first_filename = filenames[0]
         lower_name = first_filename.lower()
@@ -365,6 +404,7 @@ def create_app() -> Dash:
             data = parse_csv(contents[0], first_filename)
             status = f"{len(data)} structures loaded from {first_filename}"
             metadata = {"file_type": "csv", "filename": first_filename}
+            summary = f"CSV loaded: {first_filename}"
         elif lower_name.endswith(".dcm"):
             data = parse_dicom(contents[0], first_filename, filter_tv)
             status = f"{len(data)} structures loaded from {first_filename}"
@@ -373,11 +413,34 @@ def create_app() -> Dash:
                 "filename": first_filename,
                 "contents": contents[0],
             }
+            summary = f"RTSTRUCT loaded: {first_filename}"
         else:
             data = parse_filenames(filenames, filter_tv)
             status = f"{len(data)} structures loaded"
             metadata = {"file_type": "filenames", "filenames": filenames}
-        return data, status, metadata
+            summary = f"Loaded {len(filenames)} filenames"
+        return data, status, metadata, summary
+
+    @app.callback(
+        Output("ct-upload-store", "data"),
+        Output("ct-upload-summary", "children"),
+        Output("status-bar", "children", allow_duplicate=True),
+        Input("upload-ct-data", "filename"),
+        Input("upload-ct-data", "contents"),
+        prevent_initial_call=True,
+    )
+    def update_on_ct_load(filenames, contents):
+        if not filenames or not contents:
+            return no_update, no_update, no_update
+
+        count = len(contents)
+        summary = f"Loaded {count} CT file{'s' if count != 1 else ''}."
+        status = f"{count} CT slices uploaded for visual context"
+        metadata = {
+            "filenames": filenames,
+            "contents": contents,
+        }
+        return metadata, summary, status
 
     @app.callback(
         Input("button-run-model", "n_clicks"),
@@ -387,6 +450,8 @@ def create_app() -> Dash:
         State("prompt", "value"),
         State("main-data-table", "rowData"),
         State("main-data-table", "columnDefs"),
+        State("uploaded-file-store", "data"),
+        State("ct-upload-store", "data"),
         running=[(Output("button-run-model", "disabled"), True, False)],
         background=True,
         prevent_initial_call=True,
@@ -399,27 +464,64 @@ def create_app() -> Dash:
         prompt,
         row_data,
         column_defs,
+        upload_data,
+        ct_upload_data,
     ):
         del n_clicks
         if not row_data:
             set_props("status-bar", {"children": "No structures loaded."})
             return
 
+        visual_context = None
+        if ct_upload_data and ct_upload_data.get("contents"):
+            if not upload_data or upload_data.get("file_type") != "dicom":
+                set_props(
+                    "status-bar",
+                    {"children": "CT-assisted inference requires a DICOM RTSTRUCT upload."},
+                )
+                return
+
+            model_spec = get_model_spec(model)
+            if not model_spec.supports_image_inputs:
+                set_props(
+                    "status-bar",
+                    {"children": "Selected model does not support image inputs."},
+                )
+                return
+
+            set_props("status-bar", {"children": "Preparing CT visual context..."})
+            try:
+                visual_context = StructureImageContext.from_uploads(
+                    rtstruct_contents=upload_data["contents"],
+                    ct_upload_contents=ct_upload_data["contents"],
+                )
+            except Exception as exc:
+                set_props(
+                    "status-bar",
+                    {"children": f"Failed to build CT visual context: {exc}"},
+                )
+                return
+
         set_props("main-data-table", {"columnDefs": _with_accept_renderer(column_defs)})
-        updated_rows = rename_structures(
-            model=model,
-            prompt=prompt,
-            guideline=guideline,
-            regions=regions,
-            structure_dict=row_data,
-            progress_callback=lambda message: set_props(
-                "status-bar", {"children": message}
-            ),
-            row_update_callback=lambda rows: set_props(
-                "main-data-table", {"rowData": rows}
-            ),
-            uncertain=False,
-        )
+        try:
+            updated_rows = rename_structures(
+                model=model,
+                prompt=prompt,
+                guideline=guideline,
+                regions=regions,
+                structure_dict=row_data,
+                progress_callback=lambda message: set_props(
+                    "status-bar", {"children": message}
+                ),
+                row_update_callback=lambda rows: set_props(
+                    "main-data-table", {"rowData": rows}
+                ),
+                uncertain=False,
+                visual_context=visual_context,
+            )
+        except Exception as exc:
+            set_props("status-bar", {"children": f"Model run failed: {exc}"})
+            return
         set_props("main-data-table", {"rowData": updated_rows})
         set_props("status-bar", {"children": "Model run finished!"})
 

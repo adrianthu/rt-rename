@@ -21,6 +21,10 @@ class ModelSpec:
         location = "cloud" if self.cloud else "local"
         return f"{self.name} | {self.parameters} | {location}"
 
+    @property
+    def supports_image_inputs(self) -> bool:
+        return "image" in self.modalities
+
     @classmethod
     def from_dict(cls, payload: dict) -> "ModelSpec":
         cloud = bool(payload.get("cloud", False))

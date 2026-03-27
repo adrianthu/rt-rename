@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 
 import ollama
 from openai import OpenAI
@@ -56,6 +57,16 @@ def extract_prediction_and_confidence(response_text: str) -> tuple[str, str]:
     return prediction.strip(), confidence.strip()
 
 
+def _decode_data_url_image(image_url: str) -> bytes:
+    if not image_url:
+        raise ValueError("Missing image payload for multimodal inference.")
+    if "," in image_url:
+        _, encoded = image_url.split(",", 1)
+    else:
+        encoded = image_url
+    return base64.b64decode(encoded)
+
+
 def run_llm(
     model: str = "llama3.1:70b-instruct-q4_0",
     prompt: str | None = None,
@@ -63,7 +74,9 @@ def run_llm(
     temperature: float = 0,
     top_p: float = 0.1,
     gui: bool = False,
+    content_parts: tuple[MessagePart, ...] = (),
 ) -> dict:
+    del gui
     ollama_client = ollama.Client(host=DEFAULT_OLLAMA_HOST)
     options = {
         "seed": 111,
@@ -71,19 +84,31 @@ def run_llm(
         "top_p": top_p,
         "num_ctx": 24000,
     }
+    prompt_sections: list[str] = [prompt or ""]
+    images: list[bytes] = []
+    for part in content_parts:
+        if part.type == "text" and part.text:
+            prompt_sections.append(part.text)
+        elif part.type == "image_url" and part.image_url:
+            images.append(_decode_data_url_image(part.image_url))
+        else:
+            raise ValueError(f"Unsupported message part: {part.type}")
+
     try:
         return ollama_client.generate(
             model=model,
-            prompt=prompt,
+            prompt="\n\n".join(section for section in prompt_sections if section),
             system=system_prompt,
+            images=images or None,
             options=options,
         )
     except ollama._types.ResponseError:
         ollama_client.pull(model=model)
         return ollama_client.generate(
             model=model,
-            prompt=prompt,
+            prompt="\n\n".join(section for section in prompt_sections if section),
             system=system_prompt,
+            images=images or None,
             options=options,
         )
     except Exception as exc:
@@ -136,15 +161,11 @@ def generate_response(request: GenerationRequest) -> dict[str, str]:
             content_parts=request.content_parts,
         )
 
-    if request.content_parts:
-        raise NotImplementedError(
-            "Multimodal request parts are only wired for cloud models right now."
-        )
-
     return run_llm(
         model=request.model.model_str,
         prompt=request.prompt,
         system_prompt=request.system_prompt,
         temperature=request.temperature,
         top_p=request.top_p,
+        content_parts=request.content_parts,
     )

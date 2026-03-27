@@ -3,16 +3,26 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import math
-from typing import Callable
+from typing import Callable, Protocol
 
-from .config import get_model_spec
+from .config import ModelSpec, get_model_spec
 from .constants import MODEL_SYSTEM_PROMPT
 from .guidelines import read_guideline
-from .inference import GenerationRequest, extract_prediction_and_confidence, generate_response
+from .inference import (
+    GenerationRequest,
+    MessagePart,
+    extract_prediction_and_confidence,
+    generate_response,
+)
 from .prompts import render_prompt
 
 ProgressCallback = Callable[[str], None]
 RowsCallback = Callable[[list[dict[str, object]]], None]
+
+
+class VisualContext(Protocol):
+    def get_slice_images(self, structure_name: str):
+        ...
 
 
 def check_TG263_name(tg263_list: list[str], structure: str) -> str:
@@ -21,6 +31,32 @@ def check_TG263_name(tg263_list: list[str], structure: str) -> str:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _build_visual_content_parts(
+    row: dict[str, object],
+    visual_context: VisualContext | None,
+) -> tuple[MessagePart, ...]:
+    if visual_context is None:
+        return ()
+
+    slice_images = visual_context.get_slice_images(str(row.get("local name", "")))
+    if slice_images is None:
+        return ()
+
+    return (
+        MessagePart(
+            type="text",
+            text=(
+                "Use the structure name together with the attached planning CT views. "
+                "The images are provided in this order: axial, sagittal, coronal. "
+                "The structure of interest is highlighted in red in every view."
+            ),
+        ),
+        MessagePart(type="image_url", image_url=slice_images.axial),
+        MessagePart(type="image_url", image_url=slice_images.sagittal),
+        MessagePart(type="image_url", image_url=slice_images.coronal),
+    )
 
 
 def _update_row_from_response(
@@ -49,35 +85,35 @@ def _update_row_from_response(
 
 
 def _run_single_inference(
-    model_name: str,
+    model_spec: ModelSpec,
     prompt_name: str,
-    guideline: str,
-    regions: list[str] | None,
     row: dict[str, object],
     nomenclature_list: list[dict[str, str]],
     nomenclature_names: set[str],
+    visual_context: VisualContext | None = None,
 ) -> dict[str, object]:
-    model_spec = get_model_spec(model_name)
     prompt_text = render_prompt(prompt_name, nomenclature_list, str(row["local name"]))
     response = generate_response(
         GenerationRequest(
             model=model_spec,
             prompt=prompt_text,
             system_prompt=MODEL_SYSTEM_PROMPT,
+            content_parts=_build_visual_content_parts(row, visual_context),
         )
     )
     return _update_row_from_response(row, response.get("response", ""), nomenclature_names)
 
 
 def _run_uncertain_inference(
-    model_name: str,
+    model_spec: ModelSpec,
     prompt_name: str,
     row: dict[str, object],
     nomenclature_list: list[dict[str, str]],
     nomenclature_names: set[str],
+    visual_context: VisualContext | None = None,
 ) -> dict[str, object]:
-    model_spec = get_model_spec(model_name)
     prompt_text = render_prompt(prompt_name, nomenclature_list, str(row["local name"]))
+    content_parts = _build_visual_content_parts(row, visual_context)
     responses: list[dict[str, str]] = []
     predictions: list[str] = []
 
@@ -89,6 +125,7 @@ def _run_uncertain_inference(
                 system_prompt=MODEL_SYSTEM_PROMPT,
                 temperature=1,
                 top_p=0.95,
+                content_parts=content_parts,
             )
         )
         responses.append(response)
@@ -127,10 +164,15 @@ def rename_structures(
     progress_callback: ProgressCallback | None = None,
     row_update_callback: RowsCallback | None = None,
     uncertain: bool = False,
+    visual_context: VisualContext | None = None,
 ) -> list[dict[str, object]]:
     updated_rows = deepcopy(structure_dict or [])
     if not updated_rows:
         return []
+
+    model_spec = get_model_spec(model)
+    if visual_context is not None and not model_spec.supports_image_inputs:
+        raise ValueError(f"Selected model '{model}' does not support image inputs.")
 
     nomenclature_list = read_guideline(regions, guideline, description=False)
     nomenclature_names = {item["name"] for item in nomenclature_list}
@@ -141,21 +183,21 @@ def rename_structures(
         try:
             if uncertain:
                 updated_rows[index] = _run_uncertain_inference(
-                    model_name=model,
+                    model_spec=model_spec,
                     prompt_name=prompt,
                     row=row,
                     nomenclature_list=nomenclature_list,
                     nomenclature_names=nomenclature_names,
+                    visual_context=visual_context,
                 )
             else:
                 updated_rows[index] = _run_single_inference(
-                    model_name=model,
+                    model_spec=model_spec,
                     prompt_name=prompt,
-                    guideline=guideline,
-                    regions=regions,
                     row=row,
                     nomenclature_list=nomenclature_list,
                     nomenclature_names=nomenclature_names,
+                    visual_context=visual_context,
                 )
         except Exception as exc:
             failed_row = dict(row)

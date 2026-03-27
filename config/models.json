@@ -39,7 +39,8 @@
         "name": "Gemma 3",
         "parameters": "27B",
         "model_str": "gemma3:27b",
-        "cloud": false
+        "cloud": false,
+        "modalities": ["text", "image"]
     },
     {
         "name": "Qwen 3",

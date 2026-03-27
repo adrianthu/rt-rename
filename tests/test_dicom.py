@@ -2,7 +2,7 @@ import unittest
 
 from pydicom.dataset import Dataset
 
-from rt_rename.dicom_utils import update_dicom
+from rt_rename.dicom_utils import is_ct_image_dataset, update_dicom
 
 
 class DicomUpdateTests(unittest.TestCase):
@@ -24,6 +24,16 @@ class DicomUpdateTests(unittest.TestCase):
 
         self.assertEqual(updated.StructureSetROISequence[0].ROIName, "Heart_PRV")
         self.assertEqual(updated.StructureSetROISequence[1].ROIName, "Lung_L")
+
+    def test_is_ct_image_dataset_requires_ct_modality_and_pixels(self):
+        dataset = Dataset()
+        dataset.Modality = "CT"
+        dataset.PixelData = b"1234"
+
+        self.assertTrue(is_ct_image_dataset(dataset))
+
+        dataset.Modality = "MR"
+        self.assertFalse(is_ct_image_dataset(dataset))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 from rt_rename.config import get_model_str, get_models, get_prompts, load_models
 from rt_rename.dicom_utils import (
     dataset_from_upload_contents,
+    is_ct_image_dataset,
+    is_rtstruct_dataset,
     read_dicom_rtstruct_names,
     update_dicom,
     write_dicom_rtstruct_names,
@@ -25,6 +27,7 @@ from rt_rename.parsers import (
 )
 from rt_rename.prompts import parse_prompt, parse_prompt_v2, render_prompt
 from rt_rename.rename_service import check_TG263_name, rename_structures, run_model
+from rt_rename.visual_context import StructureImageContext, StructureSliceImages
 
 __all__ = [
     "check_TG263_name",
@@ -37,6 +40,8 @@ __all__ = [
     "get_model_str",
     "get_models",
     "get_prompts",
+    "is_ct_image_dataset",
+    "is_rtstruct_dataset",
     "load_guideline",
     "load_models",
     "load_structures_dir",
@@ -54,6 +59,8 @@ __all__ = [
     "run_llm_cloud",
     "run_model",
     "sort_key",
+    "StructureImageContext",
+    "StructureSliceImages",
     "structure_dict_to_csv",
     "update_dicom",
     "write_dicom_rtstruct_names",

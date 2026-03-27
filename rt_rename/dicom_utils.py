@@ -8,9 +8,24 @@ import pydicom
 from pydicom.dataset import Dataset
 
 
+RTSTRUCT_MODALITY = "RTSTRUCT"
+CT_MODALITY = "CT"
+
+
 def dataset_from_upload_contents(contents: str) -> Dataset:
     decoded = base64.b64decode(contents.split(",", 1)[1])
     return pydicom.dcmread(io.BytesIO(decoded))
+
+
+def is_rtstruct_dataset(dataset: Dataset) -> bool:
+    return str(getattr(dataset, "Modality", "")).upper() == RTSTRUCT_MODALITY
+
+
+def is_ct_image_dataset(dataset: Dataset) -> bool:
+    return (
+        str(getattr(dataset, "Modality", "")).upper() == CT_MODALITY
+        and hasattr(dataset, "PixelData")
+    )
 
 
 def read_dicom_rtstruct_names(dicom_source: str | Path | Dataset) -> list[str]:
