@@ -71,5 +71,11 @@
         "parameters": "70B",
         "model_str": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
         "cloud": true
+    },
+    {
+        "name": "Qwen 3 VL",
+        "parameters": "32B",
+        "model_str": "qwen3-vl:32b-thinking",
+        "cloud": false
     }
 ]
