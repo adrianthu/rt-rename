@@ -1,6 +1,7 @@
-__pycache__
-cache
-data
-scripts
+__pycache__/
+*.py[cod]
+cache/
+data/
+scripts/
 .env
-docker/ollama
+docker/ollama/
